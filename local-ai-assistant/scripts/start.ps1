@@ -124,18 +124,60 @@ if (Test-Path $openwebuiPidDatei) {
 
 # Open WebUI starten
 Write-Host "  Starte Open WebUI (Port 8080)..." -ForegroundColor Gray
+$openwebuiLog = Join-Path $projektVerzeichnis "openwebui.log"
+$openwebuiErrorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
 $env:OLLAMA_BASE_URL = "http://localhost:11434"
 # Versuche zuerst den direkten Befehl, dann Fallback auf python -m
 $openwebuiExe = Get-Command open-webui -ErrorAction SilentlyContinue
 if ($openwebuiExe) {
-    $openwebuiProzess = Start-Process -FilePath "open-webui" -ArgumentList "serve" -WindowStyle Hidden -PassThru
+    $openwebuiProzess = Start-Process -FilePath "open-webui" -ArgumentList "serve" -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
 } else {
     $pythonExe = Join-Path $venvPfad "Scripts\python.exe"
-    $openwebuiProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "open_webui", "serve" -WindowStyle Hidden -PassThru
+    $openwebuiProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "open_webui", "serve" -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
 }
 $openwebuiProzess.Id | Set-Content $openwebuiPidDatei
-Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
-Write-Host "       http://localhost:8080" -ForegroundColor Cyan
+
+# Warte bis Open WebUI tatsaechlich auf Port 8080 antwortet
+$maxVersuche = 30
+$versuch = 0
+$bereit = $false
+Write-Host "  Warte auf Open WebUI..." -ForegroundColor Gray
+while ($versuch -lt $maxVersuche) {
+    Start-Sleep -Seconds 2
+    $versuch++
+    # Prüfe ob der Prozess noch lebt
+    $proc = Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        Write-Host "  [FEHLER] Open WebUI Prozess ist abgestuerzt!" -ForegroundColor Red
+        Write-Host "  Pruefe die Logdatei: $openwebuiLog" -ForegroundColor Yellow
+        $errorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
+        if (Test-Path $errorLog) {
+            Write-Host "  Fehlerlog:" -ForegroundColor Yellow
+            Get-Content $errorLog | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        }
+        break
+    }
+    try {
+        $null = Invoke-WebRequest -Uri "http://localhost:8080" -Method Head -TimeoutSec 2 -ErrorAction Stop
+        $bereit = $true
+        break
+    } catch {
+        # Noch nicht bereit, weiter warten
+        if ($versuch % 5 -eq 0) {
+            Write-Host "  Noch nicht bereit... ($versuch/$maxVersuche)" -ForegroundColor Gray
+        }
+    }
+}
+if ($bereit) {
+    Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
+    Write-Host "       http://localhost:8080" -ForegroundColor Cyan
+} elseif (Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue) {
+    Write-Host "  [WARNUNG] Open WebUI Prozess laeuft (PID: $($openwebuiProzess.Id)), antwortet aber noch nicht auf Port 8080." -ForegroundColor Yellow
+    Write-Host "  Moeglicherweise braucht der erste Start laenger. Pruefe http://localhost:8080 manuell." -ForegroundColor Yellow
+    Write-Host "  Logdatei: $openwebuiLog" -ForegroundColor Yellow
+}
 
 # --- Zusammenfassung ---
 
@@ -147,11 +189,15 @@ Write-Host ""
 Write-Host "  Ollama:     http://localhost:11434" -ForegroundColor White
 Write-Host "  MCPO:       http://localhost:8000   (Hot-Reload aktiv)" -ForegroundColor White
 Write-Host "  Open WebUI: http://localhost:8080" -ForegroundColor White
-Write-Host ""
-Write-Host "Oeffne den Browser in 10 Sekunden..." -ForegroundColor Gray
-
-Start-Sleep -Seconds 10
-Start-Process "http://localhost:8080"
+if ($bereit) {
+    Write-Host ""
+    Write-Host "Oeffne den Browser..." -ForegroundColor Gray
+    Start-Process "http://localhost:8080"
+} else {
+    Write-Host ""
+    Write-Host "Browser wird nicht automatisch geoeffnet - Open WebUI ist noch nicht bereit." -ForegroundColor Yellow
+    Write-Host "Oeffne http://localhost:8080 manuell, sobald der Dienst bereit ist." -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "Zum Beenden: .\scripts\stop.ps1" -ForegroundColor Cyan
