@@ -305,66 +305,42 @@ if ($openwebuiProzess) {
     }
 }
 
-# --- [5/5] MCPO-Verbindung in Open WebUI registrieren ---
+# --- [5/5] MCPO-Verbindung in Open WebUI pruefen ---
 
 Write-Host ""
-Write-Host "[5/5] MCPO-Verbindung in Open WebUI konfigurieren..." -ForegroundColor Yellow
+Write-Host "[5/5] MCPO-Verbindung in Open WebUI pruefen..." -ForegroundColor Yellow
 
 if ($bereit -and $mcpoGestartet) {
+    # Pruefe ob MCPO ueber die OpenAPI-Docs erreichbar ist
+    $mcpoDocs = $false
     try {
-        # Zuerst: API-Key aus Open WebUI holen (erster Admin-User)
-        # Open WebUI speichert Config in einer SQLite-DB
-        # Wir nutzen die API um die OpenAPI-Verbindung zu registrieren
-
-        # Schritt 1: Prüfe ob MCPO-Verbindung bereits existiert
-        $headers = @{ "Content-Type" = "application/json" }
-
-        # Open WebUI API: Verbindungen auflisten
-        $verbindungen = $null
-        try {
-            $verbindungen = Invoke-RestMethod -Uri "http://localhost:8080/api/v1/openai/connections" `
-                -Method Get -TimeoutSec 5 -ErrorAction Stop
-        } catch {
-            # Manche Open WebUI Versionen brauchen Auth - versuche ohne
-        }
-
-        # Versuche die Verbindung ueber die Config-API zu setzen
-        # Open WebUI unterstuetzt OPENAI_API_BASE_URLS und OPENAI_API_KEYS als Umgebungsvariablen
-        # Da wir das programmatisch machen wollen, nutzen wir die Admin-API
-
-        $mcpoVerbindung = @{
-            url  = "http://localhost:8000"
-            key  = ""
-        }
-
-        # Versuche ueber die direkte Config-API
-        try {
-            $configPayload = @{
-                ENABLE_OPENAI_API    = $true
-                OPENAI_API_BASE_URLS = @("http://localhost:8000")
-                OPENAI_API_KEYS      = @("")
-            } | ConvertTo-Json
-
-            Invoke-RestMethod -Uri "http://localhost:8080/api/v1/config/update" `
-                -Method Post -Body $configPayload -ContentType "application/json" `
-                -TimeoutSec 5 -ErrorAction Stop | Out-Null
-
-            Write-Host "  [OK] MCPO als OpenAPI-Verbindung registriert" -ForegroundColor Green
-        } catch {
-            Write-Host "  [INFO] MCPO-Verbindung konnte nicht automatisch registriert werden." -ForegroundColor Yellow
-            Write-Host "  Bitte manuell in Open WebUI hinzufuegen:" -ForegroundColor Yellow
-            Write-Host "    Admin > Einstellungen > Verbindungen > Verbindung hinzufuegen" -ForegroundColor Cyan
-            Write-Host "    Typ: OpenAPI | URL: http://localhost:8000" -ForegroundColor Cyan
-        }
+        $null = Invoke-RestMethod -Uri "http://localhost:8000/docs" -Method Get -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
+        $mcpoDocs = $true
     } catch {
-        Write-Host "  [INFO] Auto-Konfiguration uebersprungen: $($_.Exception.Message)" -ForegroundColor Gray
+        try {
+            $null = Invoke-RestMethod -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 3 -ErrorAction Stop
+            $mcpoDocs = $true
+        } catch {}
+    }
+
+    if ($mcpoDocs) {
+        Write-Host "  [OK] MCPO OpenAPI-Endpunkt erreichbar: http://localhost:8000" -ForegroundColor Green
+        Write-Host "" -ForegroundColor Gray
+        Write-Host "  Falls MCPO noch nicht in Open WebUI verbunden ist:" -ForegroundColor Yellow
+        Write-Host "    1. Oeffne http://localhost:8080 > Admin > Einstellungen > Verbindungen" -ForegroundColor Cyan
+        Write-Host "    2. Klicke 'Verbindung hinzufuegen' (+)" -ForegroundColor Cyan
+        Write-Host "    3. Typ: OpenAPI | URL: http://localhost:8000 | Speichern" -ForegroundColor Cyan
+        Write-Host "  (Nur einmalig noetig - Open WebUI merkt sich die Verbindung)" -ForegroundColor Gray
+    } else {
+        Write-Host "  [WARNUNG] MCPO laeuft, aber OpenAPI-Docs nicht erreichbar." -ForegroundColor Yellow
+        Write-Host "  Pruefe: http://localhost:8000/docs" -ForegroundColor Yellow
     }
 } else {
     if (-not $mcpoGestartet) {
-        Write-Host "  [SKIP] MCPO nicht verfuegbar - Verbindung kann nicht registriert werden." -ForegroundColor Yellow
+        Write-Host "  [SKIP] MCPO nicht verfuegbar." -ForegroundColor Yellow
     }
     if (-not $bereit) {
-        Write-Host "  [SKIP] Open WebUI nicht verfuegbar - Verbindung kann nicht registriert werden." -ForegroundColor Yellow
+        Write-Host "  [SKIP] Open WebUI nicht verfuegbar." -ForegroundColor Yellow
     }
 }
 
