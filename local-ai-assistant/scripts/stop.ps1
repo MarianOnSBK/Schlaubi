@@ -1,9 +1,52 @@
 # stop.ps1 - Beendet alle Dienste des lokalen KI-Assistenten
+# Schreibt Log nach logs\stop.log
 
-$ErrorActionPreference = "Stop"
+# --- Konfiguration ---
+$ErrorActionPreference = "Continue"
 $projektVerzeichnis = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $mcpoPidDatei = Join-Path $projektVerzeichnis ".mcpo.pid"
 $openwebuiPidDatei = Join-Path $projektVerzeichnis ".openwebui.pid"
+
+# Log-Verzeichnis
+$logVerzeichnis = Join-Path $projektVerzeichnis "logs"
+try {
+    if (-not (Test-Path $logVerzeichnis)) {
+        New-Item -ItemType Directory -Path $logVerzeichnis -Force | Out-Null
+    }
+} catch {
+    $logVerzeichnis = $projektVerzeichnis
+}
+$script:logDatei = Join-Path $logVerzeichnis "stop.log"
+"" | Set-Content -Path $script:logDatei -ErrorAction SilentlyContinue
+
+# --- Logging-Funktion ---
+function Write-Log {
+    param(
+        [Parameter(Position = 0)]
+        [string]$Message,
+        [ValidateSet("INFO", "OK", "WARN", "ERROR", "STEP", "DETAIL")]
+        [string]$Level = "INFO"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        Write-Host ""
+        Add-Content -Path $script:logDatei -Value "" -ErrorAction SilentlyContinue
+        return
+    }
+
+    $ts = Get-Date -Format "HH:mm:ss"
+    $farbe = switch ($Level) {
+        "OK"     { "Green" }
+        "WARN"   { "Yellow" }
+        "ERROR"  { "Red" }
+        "STEP"   { "Cyan" }
+        "DETAIL" { "Gray" }
+        default  { "White" }
+    }
+
+    Write-Host "[$ts] $Message" -ForegroundColor $farbe
+    Add-Content -Path $script:logDatei -Value "[$ts] [$($Level.PadRight(6))] $Message" -ErrorAction SilentlyContinue
+}
 
 # --- Hilfsfunktionen ---
 
@@ -35,21 +78,25 @@ function Stop-ServiceByPidAndPort {
         try {
             $prozess = Get-Process -Id $pid -ErrorAction SilentlyContinue
             if ($prozess) {
-                Write-Host "  Beende $Name Prozessbaum (PID: $pid)..." -ForegroundColor Gray
+                Write-Log "  PID-Datei: Beende $Name Prozessbaum (PID: $pid)..." -Level DETAIL
                 Stop-ProcessTree -ParentId $pid
                 $beendet = $true
+            } else {
+                Write-Log "  PID-Datei vorhanden, aber Prozess $pid existiert nicht mehr" -Level DETAIL
             }
         } catch {}
         Remove-Item $PidDatei -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Log "  Keine PID-Datei fuer $Name vorhanden" -Level DETAIL
     }
 
-    # Methode 2: Port pruefen (falls PID-Methode nichts gebracht hat)
+    # Methode 2: Port pruefen
     if ($Port -gt 0) {
         try {
             $verbindungen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
             foreach ($v in $verbindungen) {
                 if ($v.OwningProcess -gt 0) {
-                    Write-Host "  Beende Prozess auf Port $Port (PID: $($v.OwningProcess))..." -ForegroundColor Gray
+                    Write-Log "  Port $Port: Beende Prozess PID $($v.OwningProcess)..." -Level DETAIL
                     Stop-ProcessTree -ParentId $v.OwningProcess
                     $beendet = $true
                 }
@@ -63,7 +110,7 @@ function Stop-ServiceByPidAndPort {
             $prozesse = Get-Process -Name $pName -ErrorAction SilentlyContinue
             if ($prozesse) {
                 $prozesse | ForEach-Object {
-                    Write-Host "  Beende $Name nach Prozessname '$pName' (PID: $($_.Id))..." -ForegroundColor Gray
+                    Write-Log "  Prozessname '$pName': Beende PID $($_.Id)..." -Level DETAIL
                     Stop-ProcessTree -ParentId $_.Id
                 }
                 $beendet = $true
@@ -72,7 +119,7 @@ function Stop-ServiceByPidAndPort {
     }
 
     if ($beendet) {
-        # Kurz warten und pruefen ob Port wirklich frei ist
+        # Pruefen ob Port wirklich frei ist
         Start-Sleep -Milliseconds 500
         $nochBelegt = $false
         if ($Port -gt 0) {
@@ -82,7 +129,7 @@ function Stop-ServiceByPidAndPort {
             } catch {}
         }
         if ($nochBelegt) {
-            Write-Host "  [WARNUNG] Port $Port ist noch belegt. Versuche erneut..." -ForegroundColor Yellow
+            Write-Log "  Port $Port noch belegt. Zweiter Versuch..." -Level WARN
             Start-Sleep -Seconds 2
             try {
                 $verbindungen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
@@ -90,69 +137,87 @@ function Stop-ServiceByPidAndPort {
                     Stop-Process -Id $v.OwningProcess -Force -ErrorAction SilentlyContinue
                 }
             } catch {}
+            # Nochmal pruefen
+            Start-Sleep -Milliseconds 500
+            try {
+                $check = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+                if ($check) {
+                    Write-Log "  [WARN] Port $Port konnte nicht freigegeben werden (PID: $($check[0].OwningProcess))" -Level WARN
+                    return
+                }
+            } catch {}
         }
-        Write-Host "  [OK] $Name beendet" -ForegroundColor Green
+        Write-Log "  [OK] $Name beendet" -Level OK
     } else {
-        Write-Host "  $Name laeuft nicht." -ForegroundColor Gray
+        Write-Log "  $Name war nicht aktiv (kein Prozess gefunden)" -Level DETAIL
     }
 }
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Lokaler KI-Assistent - Stop" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# ============================================================
+#  Stop
+# ============================================================
+
+Write-Log ""
+Write-Log "========================================" -Level STEP
+Write-Log "  Lokaler KI-Assistent - Stop" -Level STEP
+Write-Log "========================================" -Level STEP
+Write-Log ""
 
 # --- Open WebUI beenden ---
 
-Write-Host "Open WebUI beenden..." -ForegroundColor Yellow
+Write-Log "Open WebUI beenden..." -Level INFO
 Stop-ServiceByPidAndPort -Name "Open WebUI" -PidDatei $openwebuiPidDatei -Port 8080 -ProzessNamen @("open-webui")
 
 # --- MCPO beenden ---
 
-Write-Host "MCPO beenden..." -ForegroundColor Yellow
+Write-Log "MCPO beenden..." -Level INFO
 Stop-ServiceByPidAndPort -Name "MCPO" -PidDatei $mcpoPidDatei -Port 8000 -ProzessNamen @("mcpo")
 
 # --- Ollama (optional) ---
 
-Write-Host ""
+Write-Log ""
 $ollamaProzess = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
 if ($ollamaProzess) {
-    Write-Host "Ollama laeuft noch." -ForegroundColor Yellow
+    Write-Log "Ollama laeuft noch (PID: $($ollamaProzess.Id))" -Level INFO
     $beenden = Read-Host "Ollama auch beenden? (j/n)"
     if ($beenden -eq "j") {
         $ollamaProzess | Stop-Process -Force
-        Write-Host "  [OK] Ollama beendet" -ForegroundColor Green
+        Write-Log "  [OK] Ollama beendet" -Level OK
+    } else {
+        Write-Log "  Ollama laeuft weiter" -Level DETAIL
     }
-    else {
-        Write-Host "  Ollama laeuft weiter." -ForegroundColor Gray
-    }
+} else {
+    Write-Log "Ollama: nicht aktiv" -Level DETAIL
 }
 
 # --- Abschliessende Port-Pruefung ---
 
-Write-Host ""
+Write-Log ""
 $allesFrei = $true
 foreach ($port in @(8000, 8080)) {
     try {
         $check = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
         if ($check) {
-            Write-Host "[WARNUNG] Port $port ist noch belegt (PID: $($check[0].OwningProcess))" -ForegroundColor Yellow
+            Write-Log "[WARN] Port $port ist noch belegt (PID: $($check[0].OwningProcess))" -Level WARN
             $allesFrei = $false
+        } else {
+            Write-Log "Port $port: frei" -Level DETAIL
         }
     } catch {}
 }
 
+Write-Log ""
 if ($allesFrei) {
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Alle Dienste beendet. Ports frei." -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
+    Write-Log "========================================" -Level OK
+    Write-Log "  Alle Dienste beendet. Ports frei." -Level OK
+    Write-Log "========================================" -Level OK
 } else {
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host "  Nicht alle Ports konnten freigegeben werden." -ForegroundColor Yellow
-    Write-Host "  Tipp: Task-Manager oeffnen und Prozesse manuell beenden." -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Log "========================================" -Level WARN
+    Write-Log "  Nicht alle Ports konnten freigegeben werden." -Level WARN
+    Write-Log "  Tipp: Task-Manager oeffnen und Prozesse manuell beenden." -Level WARN
+    Write-Log "========================================" -Level WARN
 }
 
-Write-Host ""
-Write-Host "Erneut starten: .\scripts\start.ps1" -ForegroundColor Cyan
+Write-Log ""
+Write-Log "Erneut starten: .\scripts\start.ps1" -Level INFO
+Write-Log "Logdatei: $($script:logDatei)" -Level DETAIL
