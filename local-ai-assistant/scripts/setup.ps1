@@ -216,18 +216,53 @@ if ($uvVorhanden) {
     Write-Host "  Nutze uv pip (schneller)..." -ForegroundColor Gray
 }
 
+# Zeige Python-Version im venv vor Installation
+$venvPythonExe = Join-Path $venvPfad "Scripts\python.exe"
+if (Test-Path $venvPythonExe) {
+    $venvPyVersion = & $venvPythonExe --version 2>&1
+    Write-Host "  Python im venv: $venvPyVersion" -ForegroundColor Gray
+}
+
+# Pruefe ob Visual C++ Build Tools vorhanden sind (einige Pakete benoetigen sie)
+$vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$hasBuildTools = $false
+if (Test-Path $vsWhere) {
+    $vsInstalls = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | ConvertFrom-Json
+    if ($vsInstalls.Count -gt 0) { $hasBuildTools = $true }
+}
+if (-not $hasBuildTools) {
+    Write-Host "  HINWEIS: Visual C++ Build Tools nicht erkannt." -ForegroundColor Yellow
+    Write-Host "  Falls Pakete nicht installierbar sind, installiere:" -ForegroundColor Yellow
+    Write-Host "  https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Cyan
+    Write-Host "  (Waehle 'Desktopentwicklung mit C++' bei der Installation)" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+# pip aktualisieren bevor Pakete installiert werden
+Write-Host "  Aktualisiere pip..." -ForegroundColor Gray
+Invoke-Expression "$pipCmd install --upgrade pip" 2>&1 | Out-Null
+
 $pakete = @("open-webui", "mcpo", "outlook-mcp-server-windows-com", "pywin32")
 foreach ($paket in $pakete) {
     Write-Host "  Installiere $paket..." -ForegroundColor Gray
-    $pipOutput = Invoke-Expression "$pipCmd install $paket" 2>&1
+    $pipOutput = Invoke-Expression "$pipCmd install $paket --no-cache-dir" 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  [OK] $paket" -ForegroundColor Green
     } else {
         Write-Host "  [FEHLER] $paket konnte nicht installiert werden:" -ForegroundColor Red
-        $pipOutput | Select-Object -Last 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        # Zeige die letzten 15 Zeilen fuer bessere Fehlerdiagnose
+        $pipOutput | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        Write-Host ""
         if ($paket -eq "open-webui") {
-            Write-Host "  HINWEIS: open-webui benoetigt Python >=3.11 und <3.13!" -ForegroundColor Yellow
-            Write-Host "  Pruefe deine Python-Version im venv mit: .venv\Scripts\python --version" -ForegroundColor Yellow
+            Write-Host "  === Fehlerbehebung fuer open-webui ===" -ForegroundColor Yellow
+            Write-Host "  1. Python-Version pruefen (braucht >=3.11, <3.13):" -ForegroundColor Yellow
+            Write-Host "     .venv\Scripts\python --version" -ForegroundColor Cyan
+            Write-Host "  2. Visual C++ Build Tools installieren:" -ForegroundColor Yellow
+            Write-Host "     https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Cyan
+            Write-Host "  3. Manuell mit ausfuehrlichem Log installieren:" -ForegroundColor Yellow
+            Write-Host "     .venv\Scripts\pip install open-webui -v" -ForegroundColor Cyan
+            Write-Host "  4. Alternative: Fertige Wheels verwenden:" -ForegroundColor Yellow
+            Write-Host "     .venv\Scripts\pip install open-webui --only-binary :all:" -ForegroundColor Cyan
         }
     }
 }
