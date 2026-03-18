@@ -99,7 +99,14 @@ if (Test-Path $mcpoPidDatei) {
 
 # MCPO mit Hot-Reload starten
 Write-Host "  Starte MCPO (Port 8000, Hot-Reload)..." -ForegroundColor Gray
-$mcpoProzess = Start-Process -FilePath "mcpo" -ArgumentList "--config", $configDatei, "--port", "8000", "--hot-reload" -WindowStyle Hidden -PassThru
+# Versuche zuerst den direkten Befehl, dann Fallback auf python -m
+$mcpoExe = Get-Command mcpo -ErrorAction SilentlyContinue
+if ($mcpoExe) {
+    $mcpoProzess = Start-Process -FilePath "mcpo" -ArgumentList "--config", $configDatei, "--port", "8000", "--hot-reload" -WindowStyle Hidden -PassThru
+} else {
+    $pythonExe = Join-Path $venvPfad "Scripts\python.exe"
+    $mcpoProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "mcpo", "--config", $configDatei, "--port", "8000", "--hot-reload" -WindowStyle Hidden -PassThru
+}
 $mcpoProzess.Id | Set-Content $mcpoPidDatei
 Write-Host "  [OK] MCPO gestartet (PID: $($mcpoProzess.Id))" -ForegroundColor Green
 Write-Host "       http://localhost:8000" -ForegroundColor Cyan
@@ -118,7 +125,14 @@ if (Test-Path $openwebuiPidDatei) {
 # Open WebUI starten
 Write-Host "  Starte Open WebUI (Port 8080)..." -ForegroundColor Gray
 $env:OLLAMA_BASE_URL = "http://localhost:11434"
-$openwebuiProzess = Start-Process -FilePath "open-webui" -ArgumentList "serve" -WindowStyle Hidden -PassThru
+# Versuche zuerst den direkten Befehl, dann Fallback auf python -m
+$openwebuiExe = Get-Command open-webui -ErrorAction SilentlyContinue
+if ($openwebuiExe) {
+    $openwebuiProzess = Start-Process -FilePath "open-webui" -ArgumentList "serve" -WindowStyle Hidden -PassThru
+} else {
+    $pythonExe = Join-Path $venvPfad "Scripts\python.exe"
+    $openwebuiProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "open_webui", "serve" -WindowStyle Hidden -PassThru
+}
 $openwebuiProzess.Id | Set-Content $openwebuiPidDatei
 Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
 Write-Host "       http://localhost:8080" -ForegroundColor Cyan
