@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "name": "Dateisystem",
+    "description": "Lesen und Schreiben von lokalen Dateien",
+    "requires": "Node.js 18+",
+    "install": "npm install -g @modelcontextprotocol/server-filesystem",
+    "hinweis": "Passe den Dateipfad im 'args'-Array an dein gewünschtes Verzeichnis an"
+  },
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\%USERNAME%\\Documents"],
+  "env": {}
+}

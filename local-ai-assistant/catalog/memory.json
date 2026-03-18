@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "name": "Memory",
+    "description": "Persistenter Speicher für Konversationen und Notizen",
+    "requires": "Node.js 18+",
+    "install": "npm install -g @modelcontextprotocol/server-memory"
+  },
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-memory"],
+  "env": {}
+}
