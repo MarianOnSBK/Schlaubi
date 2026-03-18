@@ -128,12 +128,12 @@ Write-Host "[3/7] Python-Pakete installieren..." -ForegroundColor Yellow
 $pakete = @("open-webui", "mcpo", "outlook-mcp-server-windows-com", "pywin32")
 foreach ($paket in $pakete) {
     Write-Host "  Installiere $paket..." -ForegroundColor Gray
-    try {
-        pip install $paket --quiet 2>&1 | Out-Null
+    $pipOutput = pip install $paket 2>&1
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "  [OK] $paket" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "  FEHLER: $paket konnte nicht installiert werden: $($_.Exception.Message)" -ForegroundColor Red
+    } else {
+        Write-Host "  [FEHLER] $paket konnte nicht installiert werden:" -ForegroundColor Red
+        $pipOutput | Select-Object -Last 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
     }
 }
 
