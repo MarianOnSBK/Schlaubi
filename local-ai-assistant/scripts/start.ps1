@@ -127,6 +127,7 @@ Write-Host "  Starte Open WebUI (Port 8080)..." -ForegroundColor Gray
 $openwebuiLog = Join-Path $projektVerzeichnis "openwebui.log"
 $openwebuiErrorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
 $env:OLLAMA_BASE_URL = "http://localhost:11434"
+$env:PYTHONUTF8 = "1"
 # Versuche: 1) open-webui im PATH, 2) open-webui.exe im venv Scripts-Ordner
 $openwebuiExe = Get-Command open-webui -ErrorAction SilentlyContinue
 if (-not $openwebuiExe) {
