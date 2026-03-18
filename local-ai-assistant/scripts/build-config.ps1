@@ -52,11 +52,9 @@ foreach ($datei in $aktiveDateien) {
 
         # args ist optional
         if ($inhalt.args) {
-            # Umgebungsvariablen in args ersetzen
+            # Umgebungsvariablen in args ersetzen (z.B. %USERNAME% -> tatsaechlicher Wert)
             $aufgeloesteArgs = @()
             foreach ($arg in $inhalt.args) {
-                $aufgeloest = [Environment]::ExpandEnvironmentVariables($arg -replace '%(\w+)%', '${env:$1}')
-                # Fallback: Manuelle Ersetzung von %VARIABLE%
                 $aufgeloest = $arg
                 $matches_found = [regex]::Matches($aufgeloest, '%(\w+)%')
                 foreach ($match in $matches_found) {
