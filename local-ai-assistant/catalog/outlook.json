@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "name": "Outlook E-Mail",
+    "description": "Zugriff auf lokale Outlook-E-Mails über win32com",
+    "requires": "Microsoft Outlook Desktop, pywin32",
+    "install": "pip install outlook-mcp-server-windows-com pywin32"
+  },
+  "command": "outlook-mcp-server-windows-com",
+  "env": {}
+}

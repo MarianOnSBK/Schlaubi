@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "name": "Everything Search",
+    "description": "Blitzschnelle Dateisuche über Windows Everything (voidtools)",
+    "requires": "Everything von voidtools.com muss installiert und gestartet sein, Python 3.11+",
+    "install": "pip install mcp-server-everything-search",
+    "hinweis": "EVERYTHING_SDK_PATH muss auf den Ordner mit der Everything SDK DLL zeigen"
+  },
+  "command": "uvx",
+  "args": ["mcp-server-everything-search"],
+  "env": {
+    "EVERYTHING_SDK_PATH": "C:\\Pfad\\zur\\Everything-SDK"
+  }
+}

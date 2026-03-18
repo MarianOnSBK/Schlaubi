@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "name": "SQLite",
+    "description": "Zugriff auf SQLite-Datenbanken (lesen, schreiben, abfragen)",
+    "requires": "Python 3.11+",
+    "install": "pip install mcp-server-sqlite",
+    "hinweis": "Passe den Datenbank-Pfad im 'args'-Array an deine gewünschte Datei an"
+  },
+  "command": "uvx",
+  "args": ["mcp-server-sqlite", "--db-path", "C:\\Pfad\\zur\\datenbank.db"],
+  "env": {}
+}
