@@ -127,56 +127,66 @@ Write-Host "  Starte Open WebUI (Port 8080)..." -ForegroundColor Gray
 $openwebuiLog = Join-Path $projektVerzeichnis "openwebui.log"
 $openwebuiErrorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
 $env:OLLAMA_BASE_URL = "http://localhost:11434"
-# Versuche zuerst den direkten Befehl, dann Fallback auf python -m
+# Versuche: 1) open-webui im PATH, 2) open-webui.exe im venv Scripts-Ordner
 $openwebuiExe = Get-Command open-webui -ErrorAction SilentlyContinue
+if (-not $openwebuiExe) {
+    # Fallback: direkt im venv Scripts-Ordner suchen
+    $venvOpenWebui = Join-Path $venvPfad "Scripts\open-webui.exe"
+    if (Test-Path $venvOpenWebui) {
+        $openwebuiExe = $venvOpenWebui
+    }
+}
 if ($openwebuiExe) {
-    $openwebuiProzess = Start-Process -FilePath "open-webui" -ArgumentList "serve" -WindowStyle Hidden -PassThru `
+    $exePath = if ($openwebuiExe -is [string]) { $openwebuiExe } else { $openwebuiExe.Source }
+    $openwebuiProzess = Start-Process -FilePath $exePath -ArgumentList "serve" -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
 } else {
-    $pythonExe = Join-Path $venvPfad "Scripts\python.exe"
-    $openwebuiProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "open_webui", "serve" -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
+    Write-Host "  [FEHLER] open-webui nicht gefunden! Bitte installieren:" -ForegroundColor Red
+    Write-Host "  pip install open-webui" -ForegroundColor Yellow
+    $openwebuiProzess = $null
 }
-$openwebuiProzess.Id | Set-Content $openwebuiPidDatei
-
-# Warte bis Open WebUI tatsaechlich auf Port 8080 antwortet
-$maxVersuche = 30
-$versuch = 0
 $bereit = $false
-Write-Host "  Warte auf Open WebUI..." -ForegroundColor Gray
-while ($versuch -lt $maxVersuche) {
-    Start-Sleep -Seconds 2
-    $versuch++
-    # Prüfe ob der Prozess noch lebt
-    $proc = Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue
-    if (-not $proc) {
-        Write-Host "  [FEHLER] Open WebUI Prozess ist abgestuerzt!" -ForegroundColor Red
-        Write-Host "  Pruefe die Logdatei: $openwebuiLog" -ForegroundColor Yellow
-        $errorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
-        if (Test-Path $errorLog) {
-            Write-Host "  Fehlerlog:" -ForegroundColor Yellow
-            Get-Content $errorLog | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+if ($openwebuiProzess) {
+    $openwebuiProzess.Id | Set-Content $openwebuiPidDatei
+
+    # Warte bis Open WebUI tatsaechlich auf Port 8080 antwortet
+    $maxVersuche = 30
+    $versuch = 0
+    Write-Host "  Warte auf Open WebUI..." -ForegroundColor Gray
+    while ($versuch -lt $maxVersuche) {
+        Start-Sleep -Seconds 2
+        $versuch++
+        # Prüfe ob der Prozess noch lebt
+        $proc = Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue
+        if (-not $proc) {
+            Write-Host "  [FEHLER] Open WebUI Prozess ist abgestuerzt!" -ForegroundColor Red
+            Write-Host "  Pruefe die Logdateien:" -ForegroundColor Yellow
+            Write-Host "    $openwebuiLog" -ForegroundColor Yellow
+            Write-Host "    $openwebuiErrorLog" -ForegroundColor Yellow
+            if (Test-Path $openwebuiErrorLog) {
+                Write-Host "  Fehlerlog:" -ForegroundColor Yellow
+                Get-Content $openwebuiErrorLog | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+            }
+            break
         }
-        break
-    }
-    try {
-        $null = Invoke-WebRequest -Uri "http://localhost:8080" -Method Head -TimeoutSec 2 -ErrorAction Stop
-        $bereit = $true
-        break
-    } catch {
-        # Noch nicht bereit, weiter warten
-        if ($versuch % 5 -eq 0) {
-            Write-Host "  Noch nicht bereit... ($versuch/$maxVersuche)" -ForegroundColor Gray
+        try {
+            $null = Invoke-WebRequest -Uri "http://localhost:8080" -Method Head -TimeoutSec 2 -ErrorAction Stop
+            $bereit = $true
+            break
+        } catch {
+            if ($versuch % 5 -eq 0) {
+                Write-Host "  Noch nicht bereit... ($versuch/$maxVersuche)" -ForegroundColor Gray
+            }
         }
     }
-}
-if ($bereit) {
-    Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
-    Write-Host "       http://localhost:8080" -ForegroundColor Cyan
-} elseif (Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue) {
-    Write-Host "  [WARNUNG] Open WebUI Prozess laeuft (PID: $($openwebuiProzess.Id)), antwortet aber noch nicht auf Port 8080." -ForegroundColor Yellow
-    Write-Host "  Moeglicherweise braucht der erste Start laenger. Pruefe http://localhost:8080 manuell." -ForegroundColor Yellow
-    Write-Host "  Logdatei: $openwebuiLog" -ForegroundColor Yellow
+    if ($bereit) {
+        Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
+        Write-Host "       http://localhost:8080" -ForegroundColor Cyan
+    } elseif (Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue) {
+        Write-Host "  [WARNUNG] Open WebUI Prozess laeuft (PID: $($openwebuiProzess.Id)), antwortet aber noch nicht auf Port 8080." -ForegroundColor Yellow
+        Write-Host "  Moeglicherweise braucht der erste Start laenger. Pruefe http://localhost:8080 manuell." -ForegroundColor Yellow
+        Write-Host "  Logdatei: $openwebuiLog" -ForegroundColor Yellow
+    }
 }
 
 # --- Zusammenfassung ---
