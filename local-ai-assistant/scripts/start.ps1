@@ -587,6 +587,52 @@ if ($mcpoGestartet) {
         Write-Log "  MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
     }
 
+    # MCPO-Log parsen: Welche MCP-Server haben sich verbunden, welche nicht?
+    # MCPO schreibt Zeilen wie:
+    #   "Successfully connected to 'outlook'."
+    #   "Failed to connect to MCP server 'filesystem': McpError: Connection closed"
+    Write-Log ""
+    Write-Log "  --- MCP-Server Verbindungsstatus (aus MCPO-Log) ---" -Level INFO
+    if (Test-Path $mcpoErrorLog) {
+        $mcpoLogInhalt = Get-Content $mcpoErrorLog -ErrorAction SilentlyContinue
+        $erfolgreich = @()
+        $fehlgeschlagen = @{}
+
+        foreach ($zeile in $mcpoLogInhalt) {
+            if ($zeile -match "Successfully connected to '([^']+)'") {
+                $srvName = $Matches[1]
+                if ($erfolgreich -notcontains $srvName) {
+                    $erfolgreich += $srvName
+                }
+            }
+            elseif ($zeile -match "Failed to (connect|establish).*?'([^']+)'") {
+                $srvName = $Matches[2]
+                $grund = "unbekannt"
+                if ($zeile -match "McpError:\s*(.+)$") {
+                    $grund = $Matches[1].Trim()
+                } elseif ($zeile -match "-\s+(.+)$") {
+                    $grund = $Matches[1].Trim()
+                }
+                $fehlgeschlagen[$srvName] = $grund
+            }
+        }
+
+        if ($erfolgreich.Count -gt 0 -or $fehlgeschlagen.Count -gt 0) {
+            foreach ($s in $erfolgreich) {
+                Write-Log "    [OK] $s - verbunden" -Level OK
+            }
+            foreach ($s in $fehlgeschlagen.Keys) {
+                Write-Log "    [FEHLER] $s - Verbindung fehlgeschlagen" -Level ERROR
+                Write-Log "      Grund: $($fehlgeschlagen[$s])" -Level DETAIL
+            }
+        } else {
+            Write-Log "  MCPO-Log noch leer oder Server werden noch initialisiert" -Level DETAIL
+            Write-Log "  Pruefe spaeter: $mcpoErrorLog" -Level DETAIL
+        }
+    } else {
+        Write-Log "  MCPO-Logdatei nicht gefunden: $mcpoErrorLog" -Level DETAIL
+    }
+
     Write-Log ""
     Write-Log "  Falls MCPO noch nicht in Open WebUI verbunden ist:" -Level INFO
     Write-Log "    1. Oeffne http://localhost:8080 > Admin > Einstellungen > Verbindungen" -Level INFO
