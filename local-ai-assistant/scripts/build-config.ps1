@@ -26,7 +26,7 @@ if ($alleDateien.Count -eq 0) {
     Write-Host "Verwende '.\scripts\add-server.ps1' um einen Server hinzuzufügen." -ForegroundColor Yellow
     # Erstelle leere Config
     $leereConfig = @{ mcpServers = @{} } | ConvertTo-Json -Depth 10
-    Set-Content -Path $configDatei -Value $leereConfig -Encoding UTF8
+    [System.IO.File]::WriteAllText($configDatei, $leereConfig, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Leere mcpo-config.json erstellt." -ForegroundColor Yellow
     exit 0
 }
@@ -116,7 +116,7 @@ $config = @{
 }
 
 $jsonOutput = $config | ConvertTo-Json -Depth 10
-Set-Content -Path $configDatei -Value $jsonOutput -Encoding UTF8
+[System.IO.File]::WriteAllText($configDatei, $jsonOutput, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host ""
 Write-Host "mcpo-config.json erfolgreich erstellt!" -ForegroundColor Green
