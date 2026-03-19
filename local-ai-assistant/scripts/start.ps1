@@ -248,6 +248,19 @@ if (-not (Test-Path $buildScript)) {
                 $serverAnzahl = ($configInhalt.mcpServers.PSObject.Properties | Measure-Object).Count
             }
             Write-Log "  [OK] mcpo-config.json erstellt ($serverAnzahl aktive Server)" -Level OK
+
+            # Pruefen ob Server-Executables installiert sind
+            foreach ($server in $configInhalt.mcpServers.PSObject.Properties) {
+                $srvName = $server.Name
+                $srvCmd = $server.Value.command
+                $cmdPfad = Find-Executable -Name $srvCmd -VenvFallback (Join-Path $venvPfad "Scripts\$srvCmd.exe")
+                if ($cmdPfad) {
+                    Write-Log "    Server '${srvName}': $srvCmd [OK]" -Level OK
+                } else {
+                    Write-Log "    Server '${srvName}': $srvCmd [NICHT INSTALLIERT]" -Level ERROR
+                    Write-Log "    Loesung: pip install $srvCmd" -Level DETAIL
+                }
+            }
         } else {
             Write-Log "  [ERROR] mcpo-config.json wurde nicht erstellt" -Level ERROR
             Write-Log "  Grund: build-config.ps1 lief ohne Fehler, aber die Datei fehlt" -Level DETAIL
@@ -520,40 +533,61 @@ Write-Log ""
 
 Write-Log "[5/5] MCPO-Verbindung pruefen..." -Level STEP
 
-if ($bereit -and $mcpoGestartet) {
-    $mcpoDocs = $false
+if ($mcpoGestartet) {
+    # Tool-Discovery: Welche Tools bietet MCPO tatsaechlich an?
+    $toolAnzahl = 0
     try {
-        $null = Invoke-WebRequest -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-        $mcpoDocs = $true
-    } catch {
-        try {
-            $null = Invoke-WebRequest -Uri "http://localhost:8000/docs" -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-            $mcpoDocs = $true
-        } catch {
-            Write-Log "  Grund: $($_.Exception.Message)" -Level DETAIL
+        $spec = Invoke-RestMethod -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 5 -ErrorAction Stop
+        if ($spec.paths) {
+            $endpoints = $spec.paths.PSObject.Properties | Where-Object { $_.Name -notmatch "^/(docs|openapi|health)" }
+            $toolAnzahl = ($endpoints | Measure-Object).Count
         }
-    }
 
-    if ($mcpoDocs) {
-        Write-Log "  [OK] MCPO OpenAPI-Endpunkt erreichbar: http://localhost:8000" -Level OK
-        Write-Log "" -Level INFO
-        Write-Log "  Falls MCPO noch nicht in Open WebUI verbunden ist:" -Level WARN
-        Write-Log "    1. Oeffne http://localhost:8080 > Admin > Einstellungen > Verbindungen" -Level INFO
-        Write-Log "    2. Klicke 'Verbindung hinzufuegen' (+)" -Level INFO
-        Write-Log "    3. Typ: OpenAPI | URL: http://localhost:8000 | Speichern" -Level INFO
-        Write-Log "  (Nur einmalig noetig - Open WebUI merkt sich die Verbindung)" -Level DETAIL
-    } else {
-        Write-Log "  [WARN] MCPO laeuft, aber OpenAPI-Endpunkt nicht erreichbar" -Level WARN
+        if ($toolAnzahl -gt 0) {
+            Write-Log "  [OK] MCPO erreichbar - $toolAnzahl Tools verfuegbar:" -Level OK
+            foreach ($ep in $endpoints) {
+                $beschreibung = ""
+                if ($ep.Value.post -and $ep.Value.post.summary) {
+                    $beschreibung = " - $($ep.Value.post.summary)"
+                }
+                Write-Log "    $($ep.Name)$beschreibung" -Level DETAIL
+            }
+
+            # Outlook-spezifisch pruefen
+            $outlookTools = $endpoints | Where-Object { $_.Name -match "outlook" }
+            if ($outlookTools) {
+                $outlookCount = ($outlookTools | Measure-Object).Count
+                Write-Log "  [OK] Outlook-Tools verfuegbar ($outlookCount Endpunkte)" -Level OK
+            } else {
+                Write-Log "  [WARN] Outlook-Tools sind NICHT verfuegbar!" -Level WARN
+                Write-Log "  Moegliche Ursachen:" -Level DETAIL
+                Write-Log "    - outlook-mcp-server-windows-com nicht installiert (pip install outlook-mcp-server-windows-com)" -Level DETAIL
+                Write-Log "    - Outlook Desktop nicht geoeffnet" -Level DETAIL
+                Write-Log "    - Pruefe MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
+            }
+        } else {
+            Write-Log "  [WARN] MCPO erreichbar, aber KEINE Tools verfuegbar!" -Level WARN
+            Write-Log "  Die MCP-Server konnten moeglicherweise nicht gestartet werden." -Level DETAIL
+            Write-Log "  Pruefe:" -Level DETAIL
+            Write-Log "    - Sind die Server installiert? (pip install outlook-mcp-server-windows-com)" -Level DETAIL
+            Write-Log "    - MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
+        }
+    } catch {
+        Write-Log "  [WARN] MCPO OpenAPI-Endpunkt nicht erreichbar" -Level WARN
+        Write-Log "  Grund: $($_.Exception.Message)" -Level DETAIL
         Write-Log "  Pruefe: http://localhost:8000/docs" -Level DETAIL
         Write-Log "  Fehlerlog: $mcpoErrorLog" -Level DETAIL
     }
+
+    Write-Log ""
+    Write-Log "  Falls MCPO noch nicht in Open WebUI verbunden ist:" -Level INFO
+    Write-Log "    1. Oeffne http://localhost:8080 > Admin > Einstellungen > Verbindungen" -Level INFO
+    Write-Log "    2. Klicke 'Verbindung hinzufuegen' (+)" -Level INFO
+    Write-Log "    3. Typ: OpenAPI | URL: http://localhost:8000 | Speichern" -Level INFO
+    Write-Log "  (Nur einmalig noetig - Open WebUI merkt sich die Verbindung)" -Level DETAIL
 } else {
-    if (-not $mcpoGestartet) {
-        Write-Log "  [SKIP] MCPO nicht verfuegbar - Verbindungspruefung uebersprungen" -Level WARN
-    }
-    if (-not $bereit) {
-        Write-Log "  [SKIP] Open WebUI nicht verfuegbar - Verbindungspruefung uebersprungen" -Level WARN
-    }
+    Write-Log "  [SKIP] MCPO nicht verfuegbar - Tool-Pruefung uebersprungen" -Level WARN
+    Write-Log "  Ohne MCPO sind keine MCP-Tools (Outlook etc.) verfuegbar" -Level DETAIL
 }
 
 Write-Log ""
