@@ -91,7 +91,7 @@ foreach ($datei in $aktiveDateien) {
         Write-Host "  [OK] $serverName - Aktiv" -ForegroundColor Green
     }
     catch {
-        $fehler += "  FEHLER: $($datei.Name) - $($_.Exception.Message)"
+        $fehler += "  FEHLER: $($datei.Name) - $($_.Exception.Message) (Tipp: JSON-Syntax mit einem Online-Validator pruefen)"
     }
 }
 

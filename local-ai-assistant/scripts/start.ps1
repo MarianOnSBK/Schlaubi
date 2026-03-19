@@ -1,215 +1,633 @@
 # start.ps1 - Startet alle Dienste des lokalen KI-Assistenten
+# Schreibt detailliertes Log nach logs\start.log fuer Nachvollziehbarkeit
 
-$ErrorActionPreference = "Stop"
+# --- Konfiguration ---
+$ErrorActionPreference = "Continue"
+$startZeitpunkt = Get-Date
 $projektVerzeichnis = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $buildScript = Join-Path $projektVerzeichnis "scripts\build-config.ps1"
 $venvPfad = Join-Path $projektVerzeichnis ".venv"
 $mcpoPidDatei = Join-Path $projektVerzeichnis ".mcpo.pid"
 $openwebuiPidDatei = Join-Path $projektVerzeichnis ".openwebui.pid"
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Lokaler KI-Assistent - Start" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# Log-Verzeichnis erstellen
+$logVerzeichnis = Join-Path $projektVerzeichnis "logs"
+try {
+    if (-not (Test-Path $logVerzeichnis)) {
+        New-Item -ItemType Directory -Path $logVerzeichnis -Force | Out-Null
+    }
+} catch {
+    $logVerzeichnis = $projektVerzeichnis
+}
+
+$script:logDatei = Join-Path $logVerzeichnis "start.log"
+$mcpoLog = Join-Path $logVerzeichnis "mcpo-stdout.log"
+$mcpoErrorLog = Join-Path $logVerzeichnis "mcpo-stderr.log"
+$openwebuiLog = Join-Path $logVerzeichnis "openwebui-stdout.log"
+$openwebuiErrorLog = Join-Path $logVerzeichnis "openwebui-stderr.log"
+
+# Altes Start-Log sichern
+if (Test-Path $script:logDatei) {
+    $backup = Join-Path $logVerzeichnis "start.log.bak"
+    Copy-Item -Path $script:logDatei -Destination $backup -Force -ErrorAction SilentlyContinue
+}
+"" | Set-Content -Path $script:logDatei -ErrorAction SilentlyContinue
+
+# --- Logging-Funktion ---
+# Schreibt gleichzeitig auf Konsole (farbig) und in Logdatei (mit Level)
+function Write-Log {
+    param(
+        [Parameter(Position = 0)]
+        [string]$Message,
+        [ValidateSet("INFO", "OK", "WARN", "ERROR", "STEP", "DETAIL")]
+        [string]$Level = "INFO"
+    )
+
+    # Leerzeilen ohne Timestamp
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        Write-Host ""
+        Add-Content -Path $script:logDatei -Value "" -ErrorAction SilentlyContinue
+        return
+    }
+
+    $ts = Get-Date -Format "HH:mm:ss"
+    $farbe = switch ($Level) {
+        "OK"     { "Green" }
+        "WARN"   { "Yellow" }
+        "ERROR"  { "Red" }
+        "STEP"   { "Cyan" }
+        "DETAIL" { "Gray" }
+        default  { "White" }
+    }
+
+    Write-Host "[$ts] $Message" -ForegroundColor $farbe
+    Add-Content -Path $script:logDatei -Value "[$ts] [$($Level.PadRight(6))] $Message" -ErrorAction SilentlyContinue
+}
+
+# --- Hilfsfunktionen ---
+
+function Stop-ProcessTree {
+    param([int]$ParentId)
+    try {
+        $children = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ParentProcessId -eq $ParentId }
+        foreach ($child in $children) {
+            Stop-ProcessTree -ParentId $child.ProcessId
+        }
+        Stop-Process -Id $ParentId -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Stop-ProcessOnPort {
+    param([int]$Port)
+    try {
+        $verbindungen = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+        foreach ($v in $verbindungen) {
+            if ($v.OwningProcess -gt 0) {
+                Write-Log "  Beende Prozess PID $($v.OwningProcess) auf Port $Port" -Level DETAIL
+                Stop-ProcessTree -ParentId $v.OwningProcess
+            }
+        }
+    } catch {
+        Write-Log "  Port $Port konnte nicht freigegeben werden: $($_.Exception.Message)" -Level WARN
+    }
+}
+
+function Test-PortReady {
+    param([int]$Port, [int]$TimeoutSec = 2)
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $result = $tcp.BeginConnect("localhost", $Port, $null, $null)
+        $success = $result.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)
+        if ($success) {
+            try { $tcp.EndConnect($result) } catch {}
+        }
+        $tcp.Close()
+        return $success
+    } catch {
+        return $false
+    }
+}
+
+function Find-Executable {
+    param([string]$Name, [string]$VenvFallback)
+    $cmd = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    if ($VenvFallback -and (Test-Path $VenvFallback)) { return $VenvFallback }
+    return $null
+}
+
+# ============================================================
+#  Banner
+# ============================================================
+
+Write-Log ""
+Write-Log "========================================" -Level STEP
+Write-Log "  Lokaler KI-Assistent - Start" -Level STEP
+Write-Log "========================================" -Level STEP
+Write-Log ""
+Write-Log "Logdatei: $($script:logDatei)" -Level DETAIL
+
+# --- System-Diagnose ---
+Write-Log "--- System-Diagnose ---" -Level STEP
+Write-Log "  Zeitpunkt:          $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Level DETAIL
+Write-Log "  Computer:           $env:COMPUTERNAME" -Level DETAIL
+Write-Log "  Benutzer:           $env:USERNAME" -Level DETAIL
+Write-Log "  Projektverzeichnis: $projektVerzeichnis" -Level DETAIL
+
+try { $psVer = "$($PSVersionTable.PSVersion)"; Write-Log "  PowerShell:         $psVer" -Level DETAIL } catch {}
+
+try {
+    $pyVer = python --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "  Python:             $pyVer" -Level DETAIL
+    } else {
+        Write-Log "  Python:             NICHT GEFUNDEN" -Level WARN
+    }
+} catch {
+    Write-Log "  Python:             NICHT GEFUNDEN" -Level WARN
+}
+
+try {
+    $nodeVer = node --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "  Node.js:            $nodeVer" -Level DETAIL
+    } else {
+        Write-Log "  Node.js:            NICHT GEFUNDEN" -Level WARN
+    }
+} catch {
+    Write-Log "  Node.js:            NICHT GEFUNDEN" -Level WARN
+}
+
+try {
+    $ollamaVer = ollama --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "  Ollama:             $ollamaVer" -Level DETAIL
+    } else {
+        Write-Log "  Ollama:             NICHT GEFUNDEN" -Level WARN
+    }
+} catch {
+    Write-Log "  Ollama:             NICHT GEFUNDEN" -Level WARN
+}
+
+Write-Log ""
 
 # --- Virtual Environment aktivieren ---
 
 $aktivierungsScript = Join-Path $venvPfad "Scripts\Activate.ps1"
 if (Test-Path $aktivierungsScript) {
-    & $aktivierungsScript
-    Write-Host "[OK] Virtual Environment aktiviert" -ForegroundColor Green
+    try {
+        & $aktivierungsScript
+        $venvPython = Join-Path $venvPfad "Scripts\python.exe"
+        if (Test-Path $venvPython) {
+            $venvPyVer = & $venvPython --version 2>&1
+            Write-Log "Virtual Environment aktiviert ($venvPyVer)" -Level OK
+        } else {
+            Write-Log "Virtual Environment aktiviert" -Level OK
+        }
+    } catch {
+        Write-Log "Virtual Environment konnte nicht aktiviert werden: $($_.Exception.Message)" -Level ERROR
+        Write-Log "  Loesung: setup.ps1 erneut ausfuehren" -Level DETAIL
+    }
+} else {
+    Write-Log "Kein Virtual Environment gefunden: $venvPfad" -Level WARN
+    Write-Log "  Loesung: .\scripts\setup.ps1 ausfuehren" -Level DETAIL
 }
-else {
-    Write-Host "WARNUNG: Kein Virtual Environment gefunden. Bitte zuerst setup.ps1 ausfuehren." -ForegroundColor Yellow
-}
 
-# --- Outlook-Prüfung ---
+Write-Log ""
 
-Write-Host ""
-Write-Host "[1/4] Outlook pruefen..." -ForegroundColor Yellow
+# ============================================================
+# [1/5] Outlook pruefen
+# ============================================================
 
+Write-Log "[1/5] Outlook pruefen..." -Level STEP
+
+$outlookStatus = "unbekannt"
 try {
     $outlookProzess = Get-Process OUTLOOK -ErrorAction SilentlyContinue
     if ($outlookProzess) {
-        Write-Host "  [OK] Outlook ist geoeffnet" -ForegroundColor Green
+        $pids = ($outlookProzess | ForEach-Object { $_.Id }) -join ", "
+        Write-Log "  [OK] Outlook ist geoeffnet (PID: $pids)" -Level OK
+        $outlookStatus = "laeuft"
+    } else {
+        Write-Log "  [WARN] Outlook scheint nicht geoeffnet zu sein" -Level WARN
+        Write-Log "  Grund: Kein Prozess 'OUTLOOK' gefunden" -Level DETAIL
+        Write-Log "  Auswirkung: E-Mail-Plugin funktioniert nicht" -Level DETAIL
+        Write-Log "  Loesung: Microsoft Outlook Desktop starten" -Level DETAIL
+        $outlookStatus = "nicht gestartet"
     }
-    else {
-        Write-Host "  WARNUNG: Outlook scheint nicht geoeffnet zu sein." -ForegroundColor Yellow
-        Write-Host "  Bitte starte Microsoft Outlook, damit das E-Mail-Plugin funktioniert." -ForegroundColor Yellow
-    }
-}
-catch {
-    Write-Host "  Outlook-Status konnte nicht geprueft werden." -ForegroundColor Gray
+} catch {
+    Write-Log "  [WARN] Outlook-Pruefung fehlgeschlagen: $($_.Exception.Message)" -Level WARN
+    $outlookStatus = "pruefung fehlgeschlagen"
 }
 
-# --- MCPO-Konfiguration bauen ---
+Write-Log ""
 
-Write-Host ""
-Write-Host "[2/4] MCPO-Konfiguration aktualisieren..." -ForegroundColor Yellow
-try {
-    & $buildScript
-}
-catch {
-    Write-Host "  FEHLER: build-config.ps1 fehlgeschlagen: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
-}
+# ============================================================
+# [2/5] MCPO-Konfiguration bauen
+# ============================================================
 
-# --- Ollama starten/prüfen ---
-
-Write-Host ""
-Write-Host "[3/4] Ollama pruefen/starten..." -ForegroundColor Yellow
-
-try {
-    $response = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 3 -ErrorAction SilentlyContinue
-    Write-Host "  [OK] Ollama laeuft bereits auf Port 11434" -ForegroundColor Green
-}
-catch {
-    Write-Host "  Starte Ollama..." -ForegroundColor Gray
-    Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
-    Start-Sleep -Seconds 3
-
-    try {
-        $response = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 5
-        Write-Host "  [OK] Ollama gestartet auf Port 11434" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "  WARNUNG: Ollama konnte nicht gestartet werden." -ForegroundColor Yellow
-        Write-Host "  Bitte starte Ollama manuell: ollama serve" -ForegroundColor Yellow
-    }
-}
-
-# --- MCPO starten ---
-
-Write-Host ""
-Write-Host "[4/4] Dienste starten..." -ForegroundColor Yellow
+Write-Log "[2/5] MCPO-Konfiguration aktualisieren..." -Level STEP
 
 $configDatei = Join-Path $projektVerzeichnis "mcpo-config.json"
 
-# Prüfe ob MCPO schon läuft
+if (-not (Test-Path $buildScript)) {
+    Write-Log "  [ERROR] build-config.ps1 nicht gefunden: $buildScript" -Level ERROR
+    Write-Log "  Loesung: Datei wiederherstellen oder Repository neu klonen" -Level DETAIL
+} else {
+    try {
+        & $buildScript
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+            Write-Log "  [WARN] build-config.ps1 beendet mit Exit-Code $LASTEXITCODE" -Level WARN
+        }
+
+        if (Test-Path $configDatei) {
+            $configInhalt = Get-Content $configDatei -Raw | ConvertFrom-Json
+            $serverAnzahl = 0
+            if ($configInhalt.mcpServers) {
+                $serverAnzahl = ($configInhalt.mcpServers.PSObject.Properties | Measure-Object).Count
+            }
+            Write-Log "  [OK] mcpo-config.json erstellt ($serverAnzahl aktive Server)" -Level OK
+        } else {
+            Write-Log "  [ERROR] mcpo-config.json wurde nicht erstellt" -Level ERROR
+            Write-Log "  Grund: build-config.ps1 lief ohne Fehler, aber die Datei fehlt" -Level DETAIL
+        }
+    } catch {
+        Write-Log "  [ERROR] build-config.ps1 fehlgeschlagen: $($_.Exception.Message)" -Level ERROR
+        Write-Log "  Loesung: JSON-Dateien in servers/ auf Syntaxfehler pruefen" -Level DETAIL
+    }
+}
+
+Write-Log ""
+
+# ============================================================
+# [3/5] Ollama pruefen/starten
+# ============================================================
+
+Write-Log "[3/5] Ollama pruefen/starten..." -Level STEP
+
+$ollamaLaeuft = $false
+
+try {
+    $response = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 3 -ErrorAction Stop
+    $ollamaLaeuft = $true
+    $modellAnzahl = if ($response.models) { $response.models.Count } else { 0 }
+    Write-Log "  [OK] Ollama laeuft bereits (Port 11434, $modellAnzahl Modelle installiert)" -Level OK
+
+    if ($modellAnzahl -eq 0) {
+        Write-Log "  [WARN] Kein Modell installiert!" -Level WARN
+        Write-Log "  Loesung: ollama pull qwen2.5:14b" -Level DETAIL
+    } else {
+        foreach ($m in $response.models) {
+            Write-Log "    Modell: $($m.name)" -Level DETAIL
+        }
+    }
+} catch {
+    Write-Log "  Ollama nicht erreichbar auf Port 11434. Versuche zu starten..." -Level INFO
+
+    $ollamaExe = Find-Executable -Name "ollama"
+    if (-not $ollamaExe) {
+        Write-Log "  [ERROR] 'ollama' nicht im PATH gefunden" -Level ERROR
+        Write-Log "  Loesung: Ollama installieren von https://ollama.com/download" -Level DETAIL
+    } else {
+        Write-Log "  Starte: $ollamaExe serve" -Level DETAIL
+        try {
+            Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden
+            Start-Sleep -Seconds 3
+
+            try {
+                $response = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 5 -ErrorAction Stop
+                $ollamaLaeuft = $true
+                $modellAnzahl = if ($response.models) { $response.models.Count } else { 0 }
+                Write-Log "  [OK] Ollama gestartet (Port 11434, $modellAnzahl Modelle)" -Level OK
+            } catch {
+                Write-Log "  [ERROR] Ollama gestartet, antwortet aber nicht" -Level ERROR
+                Write-Log "  Grund: $($_.Exception.Message)" -Level DETAIL
+                Write-Log "  Loesung: 'ollama serve' manuell in einem Terminal starten" -Level DETAIL
+            }
+        } catch {
+            Write-Log "  [ERROR] Konnte Ollama nicht starten: $($_.Exception.Message)" -Level ERROR
+        }
+    }
+}
+
+Write-Log ""
+
+# ============================================================
+# [4/5] Dienste starten (MCPO + Open WebUI)
+# ============================================================
+
+Write-Log "[4/5] Dienste starten..." -Level STEP
+
+$mcpoGestartet = $false
+$bereit = $false
+
+# --- MCPO ---
+
+Write-Log "  --- MCPO (Port 8000) ---" -Level INFO
+
+# Alten MCPO-Prozess beenden
 if (Test-Path $mcpoPidDatei) {
     $alterPid = Get-Content $mcpoPidDatei
-    $prozess = Get-Process -Id $alterPid -ErrorAction SilentlyContinue
-    if ($prozess) {
-        Write-Host "  MCPO laeuft bereits (PID: $alterPid). Beende alten Prozess..." -ForegroundColor Yellow
-        Stop-Process -Id $alterPid -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
+    try {
+        $proc = Get-Process -Id $alterPid -ErrorAction SilentlyContinue
+        if ($proc) {
+            Write-Log "  Alter MCPO-Prozess gefunden (PID: $alterPid). Beende..." -Level WARN
+            Stop-ProcessTree -ParentId $alterPid
+            Start-Sleep -Seconds 1
+        }
+    } catch {}
+    Remove-Item $mcpoPidDatei -Force -ErrorAction SilentlyContinue
+}
+
+if (Test-PortReady -Port 8000 -TimeoutSec 1) {
+    Write-Log "  Port 8000 noch belegt. Beende blockierenden Prozess..." -Level WARN
+    Stop-ProcessOnPort -Port 8000
+    Start-Sleep -Seconds 1
+}
+
+# MCPO starten
+$mcpoExe = Find-Executable -Name "mcpo" -VenvFallback (Join-Path $venvPfad "Scripts\mcpo.exe")
+
+if (-not $mcpoExe) {
+    Write-Log "  [ERROR] mcpo nicht gefunden" -Level ERROR
+    Write-Log "  Gesucht in: PATH und $(Join-Path $venvPfad 'Scripts\mcpo.exe')" -Level DETAIL
+    Write-Log "  Loesung: pip install mcpo" -Level DETAIL
+} elseif (-not (Test-Path $configDatei)) {
+    Write-Log "  [ERROR] mcpo-config.json fehlt: $configDatei" -Level ERROR
+    Write-Log "  Loesung: .\scripts\build-config.ps1 ausfuehren" -Level DETAIL
+} else {
+    Write-Log "  Executable: $mcpoExe" -Level DETAIL
+    Write-Log "  Config:     $configDatei" -Level DETAIL
+    Write-Log "  Starte MCPO mit Hot-Reload..." -Level INFO
+
+    try {
+        $mcpoProzess = Start-Process -FilePath $mcpoExe `
+            -ArgumentList "--config", $configDatei, "--port", "8000", "--hot-reload" `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $mcpoLog -RedirectStandardError $mcpoErrorLog
+        $mcpoProzess.Id | Set-Content $mcpoPidDatei
+        Write-Log "  Prozess gestartet (PID: $($mcpoProzess.Id)). Warte auf Port 8000..." -Level DETAIL
+
+        $maxVersuche = 15
+        for ($i = 1; $i -le $maxVersuche; $i++) {
+            Start-Sleep -Seconds 1
+
+            # Prozess noch am Leben?
+            $proc = Get-Process -Id $mcpoProzess.Id -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                Write-Log "  [ERROR] MCPO-Prozess abgestuerzt nach $i Sekunden!" -Level ERROR
+                # Fehlerlog anzeigen
+                if (Test-Path $mcpoErrorLog) {
+                    $errInhalt = Get-Content $mcpoErrorLog -ErrorAction SilentlyContinue | Select-Object -Last 15
+                    if ($errInhalt) {
+                        Write-Log "  --- MCPO Fehlerlog ---" -Level ERROR
+                        foreach ($zeile in $errInhalt) {
+                            Write-Log "  | $zeile" -Level ERROR
+                        }
+                    }
+                }
+                if (Test-Path $mcpoLog) {
+                    $stdInhalt = Get-Content $mcpoLog -ErrorAction SilentlyContinue | Select-Object -Last 5
+                    if ($stdInhalt) {
+                        Write-Log "  --- MCPO Ausgabe ---" -Level DETAIL
+                        foreach ($zeile in $stdInhalt) {
+                            Write-Log "  | $zeile" -Level DETAIL
+                        }
+                    }
+                }
+                break
+            }
+
+            if (Test-PortReady -Port 8000 -TimeoutSec 1) {
+                $mcpoGestartet = $true
+                break
+            }
+
+            if ($i % 5 -eq 0) {
+                Write-Log "  Warte auf MCPO... ($i/$maxVersuche Sekunden)" -Level DETAIL
+            }
+        }
+
+        if ($mcpoGestartet) {
+            Write-Log "  [OK] MCPO gestartet (PID: $($mcpoProzess.Id), Port 8000, Hot-Reload aktiv)" -Level OK
+        } elseif (Get-Process -Id $mcpoProzess.Id -ErrorAction SilentlyContinue) {
+            Write-Log "  [WARN] MCPO-Prozess laeuft (PID: $($mcpoProzess.Id)), antwortet aber noch nicht" -Level WARN
+            Write-Log "  Der Start kann beim ersten Mal laenger dauern" -Level DETAIL
+            Write-Log "  Stdout: $mcpoLog" -Level DETAIL
+            Write-Log "  Stderr: $mcpoErrorLog" -Level DETAIL
+        }
+    } catch {
+        Write-Log "  [ERROR] MCPO konnte nicht gestartet werden: $($_.Exception.Message)" -Level ERROR
     }
 }
 
-# MCPO mit Hot-Reload starten
-Write-Host "  Starte MCPO (Port 8000, Hot-Reload)..." -ForegroundColor Gray
-# Versuche zuerst den direkten Befehl, dann Fallback auf python -m
-$mcpoExe = Get-Command mcpo -ErrorAction SilentlyContinue
-if ($mcpoExe) {
-    $mcpoProzess = Start-Process -FilePath "mcpo" -ArgumentList "--config", $configDatei, "--port", "8000", "--hot-reload" -WindowStyle Hidden -PassThru
-} else {
-    $pythonExe = Join-Path $venvPfad "Scripts\python.exe"
-    $mcpoProzess = Start-Process -FilePath $pythonExe -ArgumentList "-m", "mcpo", "--config", $configDatei, "--port", "8000", "--hot-reload" -WindowStyle Hidden -PassThru
-}
-$mcpoProzess.Id | Set-Content $mcpoPidDatei
-Write-Host "  [OK] MCPO gestartet (PID: $($mcpoProzess.Id))" -ForegroundColor Green
-Write-Host "       http://localhost:8000" -ForegroundColor Cyan
+# --- Open WebUI ---
 
-# Prüfe ob Open WebUI schon läuft
+Write-Log ""
+Write-Log "  --- Open WebUI (Port 8080) ---" -Level INFO
+
+# Alten Open WebUI Prozess beenden
 if (Test-Path $openwebuiPidDatei) {
     $alterPid = Get-Content $openwebuiPidDatei
-    $prozess = Get-Process -Id $alterPid -ErrorAction SilentlyContinue
-    if ($prozess) {
-        Write-Host "  Open WebUI laeuft bereits (PID: $alterPid). Beende alten Prozess..." -ForegroundColor Yellow
-        Stop-Process -Id $alterPid -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
-    }
+    try {
+        $proc = Get-Process -Id $alterPid -ErrorAction SilentlyContinue
+        if ($proc) {
+            Write-Log "  Alter Open WebUI-Prozess gefunden (PID: $alterPid). Beende..." -Level WARN
+            Stop-ProcessTree -ParentId $alterPid
+            Start-Sleep -Seconds 1
+        }
+    } catch {}
+    Remove-Item $openwebuiPidDatei -Force -ErrorAction SilentlyContinue
 }
 
-# Open WebUI starten
-Write-Host "  Starte Open WebUI (Port 8080)..." -ForegroundColor Gray
-$openwebuiLog = Join-Path $projektVerzeichnis "openwebui.log"
-$openwebuiErrorLog = Join-Path $projektVerzeichnis "openwebui-error.log"
+if (Test-PortReady -Port 8080 -TimeoutSec 1) {
+    Write-Log "  Port 8080 noch belegt. Beende blockierenden Prozess..." -Level WARN
+    Stop-ProcessOnPort -Port 8080
+    Start-Sleep -Seconds 1
+}
+
+# Umgebungsvariablen setzen
 $env:OLLAMA_BASE_URL = "http://localhost:11434"
 $env:PYTHONUTF8 = "1"
-# Versuche: 1) open-webui im PATH, 2) open-webui.exe im venv Scripts-Ordner
-$openwebuiExe = Get-Command open-webui -ErrorAction SilentlyContinue
+Write-Log "  OLLAMA_BASE_URL=$($env:OLLAMA_BASE_URL)" -Level DETAIL
+
+$openwebuiExe = Find-Executable -Name "open-webui" -VenvFallback (Join-Path $venvPfad "Scripts\open-webui.exe")
+
 if (-not $openwebuiExe) {
-    # Fallback: direkt im venv Scripts-Ordner suchen
-    $venvOpenWebui = Join-Path $venvPfad "Scripts\open-webui.exe"
-    if (Test-Path $venvOpenWebui) {
-        $openwebuiExe = $venvOpenWebui
+    Write-Log "  [ERROR] open-webui nicht gefunden" -Level ERROR
+    Write-Log "  Gesucht in: PATH und $(Join-Path $venvPfad 'Scripts\open-webui.exe')" -Level DETAIL
+    Write-Log "  Loesung: pip install open-webui" -Level DETAIL
+} else {
+    Write-Log "  Executable: $openwebuiExe" -Level DETAIL
+    Write-Log "  Starte Open WebUI..." -Level INFO
+
+    try {
+        $openwebuiProzess = Start-Process -FilePath $openwebuiExe -ArgumentList "serve" `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
+        $openwebuiProzess.Id | Set-Content $openwebuiPidDatei
+        Write-Log "  Prozess gestartet (PID: $($openwebuiProzess.Id)). Warte auf Port 8080..." -Level DETAIL
+
+        $maxVersuche = 30
+        for ($i = 1; $i -le $maxVersuche; $i++) {
+            Start-Sleep -Seconds 2
+
+            $proc = Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                Write-Log "  [ERROR] Open WebUI-Prozess abgestuerzt nach $($i * 2) Sekunden!" -Level ERROR
+                if (Test-Path $openwebuiErrorLog) {
+                    $errInhalt = Get-Content $openwebuiErrorLog -ErrorAction SilentlyContinue | Select-Object -Last 15
+                    if ($errInhalt) {
+                        Write-Log "  --- Open WebUI Fehlerlog ---" -Level ERROR
+                        foreach ($zeile in $errInhalt) {
+                            Write-Log "  | $zeile" -Level ERROR
+                        }
+                    }
+                }
+                break
+            }
+
+            if (Test-PortReady -Port 8080) {
+                $bereit = $true
+                break
+            }
+
+            if ($i % 5 -eq 0) {
+                Write-Log "  Warte auf Open WebUI... ($($i * 2)s vergangen, max $($maxVersuche * 2)s)" -Level DETAIL
+            }
+        }
+
+        if ($bereit) {
+            Write-Log "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id), Port 8080)" -Level OK
+        } elseif (Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue) {
+            Write-Log "  [WARN] Open WebUI-Prozess laeuft (PID: $($openwebuiProzess.Id)), antwortet aber noch nicht" -Level WARN
+            Write-Log "  Der erste Start kann mehrere Minuten dauern (Datenbank-Migration etc.)" -Level DETAIL
+            Write-Log "  Pruefe manuell: http://localhost:8080" -Level DETAIL
+            Write-Log "  Stdout: $openwebuiLog" -Level DETAIL
+            Write-Log "  Stderr: $openwebuiErrorLog" -Level DETAIL
+        }
+    } catch {
+        Write-Log "  [ERROR] Open WebUI konnte nicht gestartet werden: $($_.Exception.Message)" -Level ERROR
     }
 }
-if ($openwebuiExe) {
-    $exePath = if ($openwebuiExe -is [string]) { $openwebuiExe } else { $openwebuiExe.Source }
-    $openwebuiProzess = Start-Process -FilePath $exePath -ArgumentList "serve" -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $openwebuiLog -RedirectStandardError $openwebuiErrorLog
-} else {
-    Write-Host "  [FEHLER] open-webui nicht gefunden! Bitte installieren:" -ForegroundColor Red
-    Write-Host "  pip install open-webui" -ForegroundColor Yellow
-    $openwebuiProzess = $null
-}
-$bereit = $false
-if ($openwebuiProzess) {
-    $openwebuiProzess.Id | Set-Content $openwebuiPidDatei
 
-    # Warte bis Open WebUI tatsaechlich auf Port 8080 antwortet
-    $maxVersuche = 30
-    $versuch = 0
-    Write-Host "  Warte auf Open WebUI..." -ForegroundColor Gray
-    while ($versuch -lt $maxVersuche) {
-        Start-Sleep -Seconds 2
-        $versuch++
-        # Prüfe ob der Prozess noch lebt
-        $proc = Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue
-        if (-not $proc) {
-            Write-Host "  [FEHLER] Open WebUI Prozess ist abgestuerzt!" -ForegroundColor Red
-            Write-Host "  Pruefe die Logdateien:" -ForegroundColor Yellow
-            Write-Host "    $openwebuiLog" -ForegroundColor Yellow
-            Write-Host "    $openwebuiErrorLog" -ForegroundColor Yellow
-            if (Test-Path $openwebuiErrorLog) {
-                Write-Host "  Fehlerlog:" -ForegroundColor Yellow
-                Get-Content $openwebuiErrorLog | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
-            }
-            break
-        }
+Write-Log ""
+
+# ============================================================
+# [5/5] MCPO-Verbindung pruefen
+# ============================================================
+
+Write-Log "[5/5] MCPO-Verbindung pruefen..." -Level STEP
+
+if ($bereit -and $mcpoGestartet) {
+    $mcpoDocs = $false
+    try {
+        $null = Invoke-WebRequest -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        $mcpoDocs = $true
+    } catch {
         try {
-            $null = Invoke-WebRequest -Uri "http://localhost:8080" -Method Head -TimeoutSec 2 -ErrorAction Stop
-            $bereit = $true
-            break
+            $null = Invoke-WebRequest -Uri "http://localhost:8000/docs" -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            $mcpoDocs = $true
         } catch {
-            if ($versuch % 5 -eq 0) {
-                Write-Host "  Noch nicht bereit... ($versuch/$maxVersuche)" -ForegroundColor Gray
-            }
+            Write-Log "  Grund: $($_.Exception.Message)" -Level DETAIL
         }
     }
-    if ($bereit) {
-        Write-Host "  [OK] Open WebUI gestartet (PID: $($openwebuiProzess.Id))" -ForegroundColor Green
-        Write-Host "       http://localhost:8080" -ForegroundColor Cyan
-    } elseif (Get-Process -Id $openwebuiProzess.Id -ErrorAction SilentlyContinue) {
-        Write-Host "  [WARNUNG] Open WebUI Prozess laeuft (PID: $($openwebuiProzess.Id)), antwortet aber noch nicht auf Port 8080." -ForegroundColor Yellow
-        Write-Host "  Moeglicherweise braucht der erste Start laenger. Pruefe http://localhost:8080 manuell." -ForegroundColor Yellow
-        Write-Host "  Logdatei: $openwebuiLog" -ForegroundColor Yellow
+
+    if ($mcpoDocs) {
+        Write-Log "  [OK] MCPO OpenAPI-Endpunkt erreichbar: http://localhost:8000" -Level OK
+        Write-Log "" -Level INFO
+        Write-Log "  Falls MCPO noch nicht in Open WebUI verbunden ist:" -Level WARN
+        Write-Log "    1. Oeffne http://localhost:8080 > Admin > Einstellungen > Verbindungen" -Level INFO
+        Write-Log "    2. Klicke 'Verbindung hinzufuegen' (+)" -Level INFO
+        Write-Log "    3. Typ: OpenAPI | URL: http://localhost:8000 | Speichern" -Level INFO
+        Write-Log "  (Nur einmalig noetig - Open WebUI merkt sich die Verbindung)" -Level DETAIL
+    } else {
+        Write-Log "  [WARN] MCPO laeuft, aber OpenAPI-Endpunkt nicht erreichbar" -Level WARN
+        Write-Log "  Pruefe: http://localhost:8000/docs" -Level DETAIL
+        Write-Log "  Fehlerlog: $mcpoErrorLog" -Level DETAIL
+    }
+} else {
+    if (-not $mcpoGestartet) {
+        Write-Log "  [SKIP] MCPO nicht verfuegbar - Verbindungspruefung uebersprungen" -Level WARN
+    }
+    if (-not $bereit) {
+        Write-Log "  [SKIP] Open WebUI nicht verfuegbar - Verbindungspruefung uebersprungen" -Level WARN
     }
 }
 
-# --- Zusammenfassung ---
+Write-Log ""
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Alle Dienste gestartet!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-Write-Host ""
-Write-Host "  Ollama:     http://localhost:11434" -ForegroundColor White
-Write-Host "  MCPO:       http://localhost:8000   (Hot-Reload aktiv)" -ForegroundColor White
-Write-Host "  Open WebUI: http://localhost:8080" -ForegroundColor White
-if ($bereit) {
-    Write-Host ""
-    Write-Host "Oeffne den Browser..." -ForegroundColor Gray
-    Start-Process "http://localhost:8080"
+# ============================================================
+#  Zusammenfassung
+# ============================================================
+
+$dauer = (Get-Date) - $startZeitpunkt
+$dauerSek = [math]::Round($dauer.TotalSeconds)
+
+Write-Log "========================================" -Level STEP
+Write-Log "  Status-Uebersicht" -Level STEP
+Write-Log "========================================" -Level STEP
+Write-Log ""
+
+# Ollama
+if ($ollamaLaeuft) {
+    Write-Log "  Ollama:     http://localhost:11434  [OK]" -Level OK
 } else {
-    Write-Host ""
-    Write-Host "Browser wird nicht automatisch geoeffnet - Open WebUI ist noch nicht bereit." -ForegroundColor Yellow
-    Write-Host "Oeffne http://localhost:8080 manuell, sobald der Dienst bereit ist." -ForegroundColor Yellow
+    Write-Log "  Ollama:     http://localhost:11434  [FEHLER]" -Level ERROR
 }
 
-Write-Host ""
-Write-Host "Zum Beenden: .\scripts\stop.ps1" -ForegroundColor Cyan
-Write-Host "Neues Plugin hinzufuegen: .\scripts\add-server.ps1 (MCPO laedt automatisch nach)" -ForegroundColor Cyan
+# MCPO
+if ($mcpoGestartet) {
+    Write-Log "  MCPO:       http://localhost:8000   [OK] (Hot-Reload aktiv)" -Level OK
+} else {
+    Write-Log "  MCPO:       http://localhost:8000   [FEHLER]" -Level ERROR
+    Write-Log "              Pruefe: $mcpoErrorLog" -Level DETAIL
+}
+
+# Open WebUI
+if ($bereit) {
+    Write-Log "  Open WebUI: http://localhost:8080   [OK]" -Level OK
+} else {
+    Write-Log "  Open WebUI: http://localhost:8080   [FEHLER]" -Level ERROR
+    Write-Log "              Pruefe: $openwebuiErrorLog" -Level DETAIL
+}
+
+# Outlook
+if ($outlookStatus -eq "laeuft") {
+    Write-Log "  Outlook:    Desktop-App             [OK]" -Level OK
+} else {
+    Write-Log "  Outlook:    Desktop-App             [WARN] $outlookStatus" -Level WARN
+}
+
+Write-Log ""
+
+# Fehleranzahl zaehlen
+$fehlerAnzahl = 0
+if (-not $ollamaLaeuft) { $fehlerAnzahl++ }
+if (-not $mcpoGestartet) { $fehlerAnzahl++ }
+if (-not $bereit) { $fehlerAnzahl++ }
+
+if ($fehlerAnzahl -eq 0) {
+    Write-Log "Alle Dienste laufen! ($dauerSek Sekunden)" -Level OK
+} else {
+    Write-Log "$fehlerAnzahl von 3 Diensten nicht bereit. ($dauerSek Sekunden)" -Level WARN
+    Write-Log "Pruefe die Logdateien fuer Details:" -Level INFO
+    Write-Log "  Start-Log:         $($script:logDatei)" -Level DETAIL
+    Write-Log "  MCPO Stdout:       $mcpoLog" -Level DETAIL
+    Write-Log "  MCPO Stderr:       $mcpoErrorLog" -Level DETAIL
+    Write-Log "  Open WebUI Stdout: $openwebuiLog" -Level DETAIL
+    Write-Log "  Open WebUI Stderr: $openwebuiErrorLog" -Level DETAIL
+}
+
+# Browser oeffnen
+if ($bereit) {
+    Write-Log ""
+    Write-Log "Oeffne Browser: http://localhost:8080" -Level INFO
+    Start-Process "http://localhost:8080"
+}
+
+Write-Log ""
+Write-Log "Zum Beenden:        .\scripts\stop.ps1" -Level INFO
+Write-Log "Plugin hinzufuegen: .\scripts\add-server.ps1" -Level INFO
+Write-Log "Alle Logs:          $logVerzeichnis" -Level INFO

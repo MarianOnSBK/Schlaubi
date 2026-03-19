@@ -1,0 +1,20 @@
+# Logs
+logs/*.log
+logs/*.log.bak
+
+# Alte Log-Dateien im Projektroot (vor Migration nach logs/)
+*.log
+
+# Laufzeit-Dateien
+.mcpo.pid
+.openwebui.pid
+
+# Generierte Konfiguration
+mcpo-config.json
+
+# Python Virtual Environment
+.venv/
+
+# Python Cache
+__pycache__/
+*.pyc
