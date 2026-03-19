@@ -534,49 +534,57 @@ Write-Log ""
 Write-Log "[5/5] MCPO-Verbindung pruefen..." -Level STEP
 
 if ($mcpoGestartet) {
-    # Tool-Discovery: Welche Tools bietet MCPO tatsaechlich an?
+    # Tool-Discovery mit Retry: MCPO initialisiert MCP-Server im Hintergrund.
+    # Bei langsamen Servern (z.B. npm-basierte) kann das bis zu 90 Sekunden dauern.
     $toolAnzahl = 0
-    try {
-        $spec = Invoke-RestMethod -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 5 -ErrorAction Stop
-        if ($spec.paths) {
-            $endpoints = $spec.paths.PSObject.Properties | Where-Object { $_.Name -notmatch "^/(docs|openapi|health)" }
-            $toolAnzahl = ($endpoints | Measure-Object).Count
+    $endpoints = $null
+    $maxToolVersuche = 12
+    $toolWarteZeit = 5
+
+    for ($t = 1; $t -le $maxToolVersuche; $t++) {
+        try {
+            $spec = Invoke-RestMethod -Uri "http://localhost:8000/openapi.json" -Method Get -TimeoutSec 5 -ErrorAction Stop
+            if ($spec.paths) {
+                $endpoints = $spec.paths.PSObject.Properties | Where-Object { $_.Name -notmatch "^/(docs|openapi|health)" }
+                $toolAnzahl = ($endpoints | Measure-Object).Count
+            }
+            if ($toolAnzahl -gt 0) { break }
+        } catch {}
+
+        if ($t -lt $maxToolVersuche) {
+            $vergangen = $t * $toolWarteZeit
+            Write-Log "  Warte auf MCP-Server-Initialisierung... (${vergangen}s / max $($maxToolVersuche * $toolWarteZeit)s)" -Level DETAIL
+            Start-Sleep -Seconds $toolWarteZeit
+        }
+    }
+
+    if ($toolAnzahl -gt 0) {
+        Write-Log "  [OK] MCPO erreichbar - $toolAnzahl Tools verfuegbar:" -Level OK
+        foreach ($ep in $endpoints) {
+            $beschreibung = ""
+            if ($ep.Value.post -and $ep.Value.post.summary) {
+                $beschreibung = " - $($ep.Value.post.summary)"
+            }
+            Write-Log "    $($ep.Name)$beschreibung" -Level DETAIL
         }
 
-        if ($toolAnzahl -gt 0) {
-            Write-Log "  [OK] MCPO erreichbar - $toolAnzahl Tools verfuegbar:" -Level OK
-            foreach ($ep in $endpoints) {
-                $beschreibung = ""
-                if ($ep.Value.post -and $ep.Value.post.summary) {
-                    $beschreibung = " - $($ep.Value.post.summary)"
-                }
-                Write-Log "    $($ep.Name)$beschreibung" -Level DETAIL
-            }
-
-            # Outlook-spezifisch pruefen
-            $outlookTools = $endpoints | Where-Object { $_.Name -match "outlook" }
-            if ($outlookTools) {
-                $outlookCount = ($outlookTools | Measure-Object).Count
-                Write-Log "  [OK] Outlook-Tools verfuegbar ($outlookCount Endpunkte)" -Level OK
-            } else {
-                Write-Log "  [WARN] Outlook-Tools sind NICHT verfuegbar!" -Level WARN
-                Write-Log "  Moegliche Ursachen:" -Level DETAIL
-                Write-Log "    - outlook-mcp-server-windows-com nicht installiert (pip install outlook-mcp-server-windows-com)" -Level DETAIL
-                Write-Log "    - Outlook Desktop nicht geoeffnet" -Level DETAIL
-                Write-Log "    - Pruefe MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
-            }
+        # Outlook-spezifisch pruefen
+        $outlookTools = $endpoints | Where-Object { $_.Name -match "outlook" }
+        if ($outlookTools) {
+            $outlookCount = ($outlookTools | Measure-Object).Count
+            Write-Log "  [OK] Outlook-Tools verfuegbar ($outlookCount Endpunkte)" -Level OK
         } else {
-            Write-Log "  [WARN] MCPO erreichbar, aber KEINE Tools verfuegbar!" -Level WARN
-            Write-Log "  Die MCP-Server konnten moeglicherweise nicht gestartet werden." -Level DETAIL
-            Write-Log "  Pruefe:" -Level DETAIL
-            Write-Log "    - Sind die Server installiert? (pip install outlook-mcp-server-windows-com)" -Level DETAIL
-            Write-Log "    - MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
+            Write-Log "  [WARN] Outlook-Tools sind NICHT verfuegbar!" -Level WARN
+            Write-Log "  Moegliche Ursachen:" -Level DETAIL
+            Write-Log "    - outlook-mcp-server-windows-com nicht installiert (pip install outlook-mcp-server-windows-com)" -Level DETAIL
+            Write-Log "    - Outlook Desktop nicht geoeffnet" -Level DETAIL
+            Write-Log "    - Pruefe MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
         }
-    } catch {
-        Write-Log "  [WARN] MCPO OpenAPI-Endpunkt nicht erreichbar" -Level WARN
-        Write-Log "  Grund: $($_.Exception.Message)" -Level DETAIL
-        Write-Log "  Pruefe: http://localhost:8000/docs" -Level DETAIL
-        Write-Log "  Fehlerlog: $mcpoErrorLog" -Level DETAIL
+    } else {
+        Write-Log "  [WARN] MCPO laeuft, aber noch keine Tools verfuegbar" -Level WARN
+        Write-Log "  MCPO initialisiert moeglicherweise noch Server (kann bis zu 90s dauern)" -Level DETAIL
+        Write-Log "  Pruefe spaeter manuell: http://localhost:8000/docs" -Level DETAIL
+        Write-Log "  MCPO Fehlerlog: $mcpoErrorLog" -Level DETAIL
     }
 
     Write-Log ""
