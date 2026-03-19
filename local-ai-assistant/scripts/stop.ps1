@@ -96,7 +96,7 @@ function Stop-ServiceByPidAndPort {
             $verbindungen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
             foreach ($v in $verbindungen) {
                 if ($v.OwningProcess -gt 0) {
-                    Write-Log "  Port $Port: Beende Prozess PID $($v.OwningProcess)..." -Level DETAIL
+                    Write-Log "  Port ${Port}: Beende Prozess PID $($v.OwningProcess)..." -Level DETAIL
                     Stop-ProcessTree -ParentId $v.OwningProcess
                     $beendet = $true
                 }
@@ -201,7 +201,7 @@ foreach ($port in @(8000, 8080)) {
             Write-Log "[WARN] Port $port ist noch belegt (PID: $($check[0].OwningProcess))" -Level WARN
             $allesFrei = $false
         } else {
-            Write-Log "Port $port: frei" -Level DETAIL
+            Write-Log "Port ${port}: frei" -Level DETAIL
         }
     } catch {}
 }
